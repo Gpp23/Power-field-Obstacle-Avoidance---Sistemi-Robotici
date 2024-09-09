@@ -39,7 +39,74 @@ class GodotTarget(GodotInterface):
         (reply, remote) = self.sd.recvfrom(1024)
         (x,y) = struct.unpack("<ff", reply[8:])
         return (x,y)
+    
+    
+class PowerFieldObstacleAvoidance():
+    
+    def __init__(self , _K_att = 0.35, _K_rep = .8, _repulsive_threshold = 0.2, _fmax = 1.5):
+        self.K_att = _K_att
+        self.K_rep = _K_rep
+        self.repulsive_threshold = _repulsive_threshold
+        self.fmax = _fmax
 
+    def evaluate(self, theta, x_target, y_target, x, y, obstacles):
+        # Apply potential field for obstacle avoidance
+        f_attr_x, f_attr_y = self.attractive_force(x_target, y_target, x, y)
+        f_rep_x, f_rep_y = self.repulsive_force(obstacles, x, y)
+        f_x = f_attr_x + f_rep_x
+        f_y = f_attr_y + f_rep_y
+        
+        if (f_x > self.fmax):
+            f_x = self.fmax
+        elif (f_x < -self.fmax):
+            f_x = -self.fmax
+            
+        if (f_y > self.fmax):
+            f_y = self.fmax
+        elif (f_y < -self.fmax):
+            f_y = -self.fmax
+            
+        print("f_x: ", f_x, " f_y: ", f_y)
+
+        v_target, w_target = self.compute_velocity(f_x, f_y, theta)
+        
+        return v_target, w_target
+    
+    def attractive_force(self, x_target, y_target, x, y):
+        f_attr_x = self.K_att * (x_target - x)
+        f_attr_y = self.K_att * (y_target - y)
+        
+        print("f_attr_x: ", f_attr_x, "f_attr_y: ", f_attr_y)
+        return f_attr_x, f_attr_y
+
+    def repulsive_force(self, obstacles, x, y):
+        epsilon = 1e-6 
+        
+        f_rep_x, f_rep_y = 0.0, 0.0
+        if obstacles:
+            tmp = obstacles.process()
+            
+            tuple_list = [tmp[i:i+3] for i in range(0, len(tmp), 3)]
+            for obs in tuple_list:
+                obs_x, obs_y, obs_r = obs  # (x, y, radius)
+                dx = x - obs_x
+                dy = y - obs_y
+                dist_to_center = math.sqrt(dx * dx + dy * dy)
+                dist_to_edge = dist_to_center - obs_r  # Distance to the edge of the obstacle
+
+                if dist_to_edge < self.repulsive_threshold and dist_to_edge > epsilon:
+                    rep_force = self.K_rep * (1.0 / dist_to_edge - 1.0 / self.repulsive_threshold) * (1.0 / (dist_to_edge * dist_to_edge))
+                    f_rep_x += rep_force * (dx / dist_to_center)
+                    f_rep_y += rep_force * (dy / dist_to_center)
+                    
+                    print("f_rep_x: ", f_rep_x, "f_rep_y: ", f_rep_y)
+        
+        return f_rep_x, f_rep_y
+    
+    def compute_velocity(self, f_x, f_y, theta):
+        v_target = math.sqrt(f_x * f_x + f_y * f_y)
+        w_target = math.atan2(f_y, f_x) - theta
+        return v_target, w_target
 
 class Cart2DRobot(threading.Thread):
 
@@ -70,6 +137,8 @@ class Cart2DRobot(threading.Thread):
 
         self.targets = None  # Object interfacing with Godot to get target positions
         self.obstacles = None  # Object interfacing with Godot to get obstacle positions and radius
+        
+        self.pfoa = PowerFieldObstacleAvoidance(.2, .05, .5, 10) # K_att, K_rep, Repulsive_threshold
 
     def goto(self, x, y):
         try:
@@ -108,16 +177,8 @@ class Cart2DRobot(threading.Thread):
                     print("Target raggiunto!")
                     self.stop()
                     return
-
-                # Apply potential field for obstacle avoidance
-                f_attr_x, f_attr_y = self.attractive_force(x_target, y_target)
-                f_rep_x, f_rep_y = self.repulsive_force()
-                f_x = f_attr_x + f_rep_x
-                f_y = f_attr_y + f_rep_y
                 
-                print("f_x: ", f_x, " f_y: ", f_y)
-
-                v_target, w_target = self.compute_velocity(f_x, f_y)
+                v_target, w_target = self.pfoa.evaluate(self.theta, x_target, y_target, self.x, self.y, self.obstacles)
 
                 vl = v_target - w_target * self.wheel_base / 2
                 vr = v_target + w_target * self.wheel_base / 2
@@ -130,42 +191,6 @@ class Cart2DRobot(threading.Thread):
 
         finally:
             self.mutex.release()
-
-    def attractive_force(self, x_target, y_target):
-        K_att = 0.35  # Gain for attractive force
-        f_attr_x = K_att * (x_target - self.x)
-        f_attr_y = K_att * (y_target - self.y)
-        return f_attr_x, f_attr_y
-
-    def repulsive_force(self):
-        K_rep = .8  # Gain for repulsive force
-        repulsive_threshold = 0.2  # Distance threshold for repulsive force
-        epsilon = 1e-6  # Piccolo valore per evitare divisioni per zero
-
-        f_rep_x, f_rep_y = 0.0, 0.0
-        if self.obstacles:
-            tmp = self.obstacles.process()
-            
-            tuple_list = [tmp[i:i+3] for i in range(0, len(tmp), 3)]
-            for obs in tuple_list:
-                obs_x, obs_y, obs_r = obs  # (x, y, radius)
-                dx = self.x - obs_x
-                dy = self.y - obs_y
-                dist_to_center = math.sqrt(dx * dx + dy * dy)
-                dist_to_edge = dist_to_center - obs_r  # Distance to the edge of the obstacle
-
-                if dist_to_edge < repulsive_threshold and dist_to_edge > epsilon:
-                    rep_force = K_rep * (1.0 / dist_to_edge - 1.0 / repulsive_threshold) * (1.0 / (dist_to_edge * dist_to_edge))
-                    f_rep_x += rep_force * (dx / dist_to_center)
-                    f_rep_y += rep_force * (dy / dist_to_center)
-        
-        return f_rep_x, f_rep_y
-
-
-    def compute_velocity(self, f_x, f_y):
-        v_target = math.sqrt(f_x * f_x + f_y * f_y)
-        w_target = math.atan2(f_y, f_x) - self.theta
-        return v_target, w_target
 
     def get_pose_deg(self):
         try:
