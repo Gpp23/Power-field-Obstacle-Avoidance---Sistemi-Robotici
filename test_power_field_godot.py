@@ -103,9 +103,16 @@ class PowerFieldObstacleAvoidance():
         
         return f_rep_x, f_rep_y
     
+    def normalize_angle(self, a):
+        while a > math.pi:
+            a = a - 2 * math.pi
+        while a < - math.pi:
+            a = a + 2 * math.pi
+        return a
+    
     def compute_velocity(self, f_x, f_y, theta):
         v_target = math.sqrt(f_x * f_x + f_y * f_y)
-        w_target = math.atan2(f_y, f_x) - theta
+        w_target = self.normalize_angle(math.atan2(f_y, f_x) - theta)
         return v_target, w_target
 
 class Cart2DRobot(threading.Thread):
